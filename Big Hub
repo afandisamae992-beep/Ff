@@ -1,0 +1,484 @@
+local success, WindUI = pcall(function()
+    return loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+end)
+
+if not success or not WindUI then
+    warn("ไม่สามารถโหลด WindUI ได้ กรุณาตรวจสอบอินเทอร์เน็ตหรือ Executor ของคุณ")
+    return
+end
+
+local Window = WindUI:CreateWindow({
+    Title = "Big Hub - Block Spin True Silent Aim",
+    Icon = "crosshair",
+    Author = "by Big Hub Team",
+    Folder = "BigHubBoxSpinSilent",
+    Theme = "Sky",
+    OpenButton = {
+        Title = "Open Big Hub",
+        Icon = "shield-alert",
+        CornerRadius = UDim.new(0, 16),
+        StrokeThickness = 2,
+        Color = ColorSequence.new(Color3.fromHex("00BFFF"), Color3.fromHex("1E90FF")),
+        OnlyMobile = false,
+        Enabled = true,
+        Draggable = true,
+    }
+})
+
+-- Services
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local Mouse = LocalPlayer:GetMouse()
+
+local Settings = {
+    SilentAim = false,
+    AimPart = "Head", 
+    Prediction = 0.05,
+    ShowFOV = true,
+    FOVSize = 180,
+    BulletTracer = true,
+    TracerColor = Color3.fromRGB(255, 0, 0), -- ค่าเริ่มต้นสีแดง
+    TracerThickness = 0.3,                 -- ค่าเริ่มต้นความหนา
+    AntiAimEnabled = false,
+    AntiAimSpeed = 50,
+    ESPName = false,
+    ESPItem = false,
+    BoxESP = false,
+    CFrameSpeedEnabled = false,
+    SpeedMultiplier = 0.5,
+    JumpPowerEnabled = false,
+    JumpPowerValue = 75,
+    UndergroundMode = false,
+    UndergroundDepth = -10
+}
+
+-- สร้างวงกลม FOV แบบ ScreenGui
+local FOVGui = Instance.new("ScreenGui")
+FOVGui.Name = "BlockSpinFOV_Gui"
+FOVGui.ResetOnSpawn = false
+FOVGui.IgnoreGuiInset = true
+FOVGui.Parent = game:GetService("CoreGui") or LocalPlayer:WaitForChild("PlayerGui")
+
+local FOVFrame = Instance.new("Frame")
+FOVFrame.Name = "FOVCircle"
+FOVFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+FOVFrame.BackgroundTransparency = 1
+FOVFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+FOVFrame.Size = UDim2.new(0, Settings.FOVSize * 2, 0, Settings.FOVSize * 2)
+FOVFrame.Parent = FOVGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(1, 0)
+UICorner.Parent = FOVFrame
+
+local UIStroke = Instance.new("UIStroke")
+UIStroke.Color = Color3.fromRGB(0, 191, 255)
+UIStroke.Thickness = 2
+UIStroke.Parent = FOVFrame
+
+-- สร้างเส้น Target Line (แบบปลอดภัย)
+local TargetLine = nil
+pcall(function()
+    if Drawing and Drawing.new then
+        TargetLine = Drawing.new("Line")
+        TargetLine.Color = Color3.fromRGB(255, 0, 0)
+        TargetLine.Thickness = 2
+        TargetLine.Transparency = 1
+        TargetLine.Visible = false
+    end
+end)
+
+local ESPObjects = {}
+local BoxESPObjects = {}
+local SpinAngle = 0
+
+-- ฟังก์ชันหาเป้าหมาย
+local function GetClosestTarget()
+    local TargetPart = nil
+    local MaxDist = Settings.FOVSize
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") and player.Character.Humanoid.Health > 0 then
+            local Part = player.Character:FindFirstChild(Settings.AimPart) or player.Character:FindFirstChild("Head")
+            if Part then
+                local TargetPos = Part.Position
+                if player.Character:FindFirstChild("HumanoidRootPart") then
+                    TargetPos = TargetPos + (player.Character.HumanoidRootPart.AssemblyLinearVelocity * Settings.Prediction)
+                end
+
+                local ScreenPos, OnScreen = Camera:WorldToViewportPoint(TargetPos)
+                local CenterScreen = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+                local Mag = (Vector2.new(ScreenPos.X, ScreenPos.Y) - CenterScreen).Magnitude
+
+                if OnScreen and Mag < MaxDist then
+                    TargetPart = Part
+                    MaxDist = Mag
+                end
+            end
+        end
+    end
+    return TargetPart
+end
+
+-- ฟังก์ชันสร้างเส้นวิถีกระสุน Bullet Tracer (รองรับการปรับสีและความหนา)
+local function CreateBulletTracer(fromPos, toPos)
+    if not Settings.BulletTracer then return end
+    pcall(function()
+        local distance = (fromPos - toPos).Magnitude
+        local tracer = Instance.new("Part")
+        tracer.Name = "BulletTracer"
+        tracer.Anchored = true
+        tracer.CanCollide = false
+        tracer.Material = Enum.Material.Neon
+        tracer.Color = Settings.TracerColor
+        tracer.Size = Vector3.new(Settings.TracerThickness, Settings.TracerThickness, distance)
+        tracer.CFrame = CFrame.new(fromPos, toPos) * CFrame.new(0, 0, -distance / 2)
+        tracer.Parent = workspace
+
+        local tweenInfo = TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+        local tween = TweenService:Create(tracer, tweenInfo, {
+            Size = Vector3.new(0, 0, distance),
+            Transparency = 1
+        })
+
+        tween:Play()
+        tween.Completed:Connect(function()
+            tracer:Destroy()
+        end)
+    end)
+end
+
+-- ยิงกระสุนเมื่อใช้งาน Tool
+local function HookTool(tool)
+    if tool:IsA("Tool") then
+        tool.Activated:Connect(function()
+            if Settings.BulletTracer and LocalPlayer.Character then
+                local origin = tool:FindFirstChild("Handle") and tool.Handle.Position or LocalPlayer.Character.Head.Position
+                local targetPart = GetClosestTarget()
+                local targetPos = (Settings.SilentAim and targetPart) and targetPart.Position or Mouse.Hit.Position
+
+                CreateBulletTracer(origin, targetPos)
+            end
+        end)
+    end
+end
+
+if LocalPlayer.Character then
+    for _, item in pairs(LocalPlayer.Character:GetChildren()) do
+        HookTool(item)
+    end
+    LocalPlayer.Character.ChildAdded:Connect(HookTool)
+end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+    char.ChildAdded:Connect(HookTool)
+end)
+
+local function GetItemDetails(itemName)
+    local lowerName = string.lower(itemName)
+    
+    -- แก้ไข ID รูปภาพตรงนี้ได้ตามต้องการ (รูปแบบ: "rbxassetid://เลขไอดีรูปภาพ")
+    local imageId = "rbxassetid://92351080291860" -- รูปไอคอนดาบ/อาวุธเริ่มต้น
+    
+    if string.find(lowerName, "gun") or string.find(lowerName, "pistol") or string.find(lowerName, "rifle") or string.find(lowerName, "shotgun") or string.find(lowerName, "sniper") or string.find(lowerName, "bazooka") or string.find(lowerName, "blaster") then
+        imageId = "rbxassetid://6023426915" -- รูปไอคอนปืน (เปลี่ยนเลขไอดีตรงนี้ได้)
+    end
+
+    if string.find(lowerName, "god") or string.find(lowerName, "mythic") or string.find(lowerName, "ultra") or string.find(lowerName, "secret") then
+        return imageId, Color3.fromRGB(255, 215, 0)
+    elseif string.find(lowerName, "legendary") or string.find(lowerName, "epic") then
+        return imageId, Color3.fromRGB(170, 0, 255)
+    elseif string.find(lowerName, "rare") or string.find(lowerName, "uncommon") then
+        return imageId, Color3.fromRGB(0, 191, 255)
+    else
+        return imageId, Color3.fromRGB(255, 255, 255)
+    end
+end
+
+-- Metatable สำหรับ Silent Aim
+if getrawmetatable and setreadonly and newcclosure then
+    pcall(function()
+        local RawMetatable = getrawmetatable(game)
+        local OldIndex = RawMetatable.__index
+        local OldNamecall = RawMetatable.__namecall
+        setreadonly(RawMetatable, false)
+
+        RawMetatable.__index = newcclosure(function(self, index)
+            if Settings.SilentAim and self == Mouse and not checkcaller() then
+                local TargetPart = GetClosestTarget()
+                if TargetPart then
+                    if index == "Hit" then return TargetPart.CFrame
+                    elseif index == "Target" then return TargetPart end
+                end
+            end
+            return OldIndex(self, index)
+        end)
+
+        RawMetatable.__namecall = newcclosure(function(self, ...)
+            local Method = getnamecallmethod()
+            local Args = {...}
+
+            if not checkcaller() and (Method == "FireServer" or Method == "InvokeServer") then
+                local TargetPart = GetClosestTarget()
+                if Settings.SilentAim and TargetPart then
+                    local TargetPos = TargetPart.Position
+                    if TargetPart.Parent and TargetPart.Parent:FindFirstChild("HumanoidRootPart") then
+                        TargetPos = TargetPos + (TargetPart.Parent.HumanoidRootPart.AssemblyLinearVelocity * Settings.Prediction)
+                    end
+
+                    for i, arg in pairs(Args) do
+                        if typeof(arg) == "CFrame" then Args[i] = CFrame.new(Camera.CFrame.Position, TargetPos)
+                        elseif typeof(arg) == "Vector3" then Args[i] = TargetPos
+                        elseif typeof(arg) == "Ray" then Args[i] = Ray.new(Camera.CFrame.Position, (TargetPos - Camera.CFrame.Position).Unit * 1000)
+                        elseif typeof(arg) == "Instance" and (arg:IsA("BasePart") or arg:IsA("Model")) then Args[i] = TargetPart
+                        end
+                    end
+                    return OldNamecall(self, unpack(Args))
+                end
+            end
+            return OldNamecall(self, ...)
+        end)
+
+        setreadonly(RawMetatable, true)
+    end)
+end
+
+RunService.RenderStepped:Connect(function()
+    FOVFrame.Visible = Settings.ShowFOV
+    FOVFrame.Size = UDim2.new(0, Settings.FOVSize * 2, 0, Settings.FOVSize * 2)
+
+    if TargetLine then
+        if Settings.SilentAim then
+            local TargetPart = GetClosestTarget()
+            if TargetPart and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Head") then
+                local ourHeadScreen, ourHeadOnScreen = Camera:WorldToViewportPoint(LocalPlayer.Character.Head.Position)
+                local targetScreen, targetOnScreen = Camera:WorldToViewportPoint(TargetPart.Position)
+
+                if ourHeadOnScreen and targetOnScreen then
+                    TargetLine.From = Vector2.new(ourHeadScreen.X, ourHeadScreen.Y)
+                    TargetLine.To = Vector2.new(targetScreen.X, targetScreen.Y)
+                    TargetLine.Visible = true
+                else
+                    TargetLine.Visible = false
+                end
+            else
+                TargetLine.Visible = false
+            end
+        else
+            TargetLine.Visible = false
+        end
+    end
+
+    local Character = LocalPlayer.Character
+    if Character and Character:FindFirstChild("Humanoid") and Character:FindFirstChild("HumanoidRootPart") then
+        local Humanoid = Character.Humanoid
+        local RootPart = Character.HumanoidRootPart
+
+        if Settings.AntiAimEnabled then
+            Humanoid.AutoRotate = false
+            SpinAngle = (SpinAngle + Settings.AntiAimSpeed) % 360
+            RootPart.CFrame = CFrame.new(RootPart.Position) * CFrame.Angles(0, math.rad(SpinAngle), 0)
+        else
+            Humanoid.AutoRotate = true
+        end
+
+        if Settings.UndergroundMode then
+            RootPart.CFrame = CFrame.new(RootPart.Position.X, Settings.UndergroundDepth, RootPart.Position.Z) * RootPart.CFrame.Rotation
+            for _, part in pairs(Character:GetChildren()) do
+                if part:IsA("BasePart") then part.CanCollide = false end
+            end
+        end
+
+        if Settings.CFrameSpeedEnabled and Humanoid.MoveDirection.Magnitude > 0 then
+            RootPart.CFrame = RootPart.CFrame + (Humanoid.MoveDirection * Settings.SpeedMultiplier)
+        end
+
+        if Settings.JumpPowerEnabled then
+            Humanoid.UseJumpPower = true
+            Humanoid.JumpPower = Settings.JumpPowerValue
+        else
+            if Humanoid.JumpPower == Settings.JumpPowerValue then
+                Humanoid.JumpPower = 50
+            end
+        end
+    end
+
+    if Settings.ESPName or Settings.ESPItem then
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Head") then
+                if not ESPObjects[player] then
+                    local Billboard = Instance.new("BillboardGui")
+                    Billboard.Size = UDim2.new(0, 200, 0, 60)
+                    Billboard.Adornee = player.Character.Head
+                    Billboard.AlwaysOnTop = true
+                    Billboard.ExtentsOffset = Vector3.new(0, 2.5, 0)
+                    
+                    local NameLabel = Instance.new("TextLabel", Billboard)
+                    NameLabel.Name = "NameLabel"
+                    NameLabel.Size = UDim2.new(1, 0, 0.4, 0)
+                    NameLabel.BackgroundTransparency = 1
+                    NameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    NameLabel.TextSize = 9
+                    NameLabel.Font = Enum.Font.SourceSansBold
+                    NameLabel.TextStrokeTransparency = 0.5
+
+                    -- เปลี่ยนเป็นเฟรมสำหรับใส่รูปภาพและชื่อไอเทม
+                    local ItemHolder = Instance.new("Frame", Billboard)
+                    ItemHolder.Name = "ItemHolder"
+                    ItemHolder.Position = UDim2.new(0, 0, 0.45, 0)
+                    ItemHolder.Size = UDim2.new(1, 0, 0.5, 0)
+                    ItemHolder.BackgroundTransparency = 1
+
+                    local ItemIcon = Instance.new("ImageLabel", ItemHolder)
+                    ItemIcon.Name = "ItemIcon"
+                    ItemIcon.Size = UDim2.new(0, 14, 0, 14)
+                    ItemIcon.Position = UDim2.new(0, 0, 0.1, 0)
+                    ItemIcon.BackgroundTransparency = 1
+
+                    local ItemLabel = Instance.new("TextLabel", ItemHolder)
+                    ItemLabel.Name = "ItemLabel"
+                    ItemLabel.Position = UDim2.new(0, 18, 0, 0)
+                    ItemLabel.Size = UDim2.new(1, -18, 1, 0)
+                    ItemLabel.BackgroundTransparency = 1
+                    ItemLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+                    ItemLabel.TextSize = 8
+                    ItemLabel.Font = Enum.Font.SourceSansBold
+                    ItemLabel.TextXAlignment = Enum.TextXAlignment.Left
+                    ItemLabel.TextStrokeTransparency = 0.5
+
+                    Billboard.Parent = player.Character.Head
+                    ESPObjects[player] = Billboard
+                end
+
+                local gui = ESPObjects[player]
+                if gui and gui:FindFirstChild("NameLabel") then
+                    gui.NameLabel.Visible = Settings.ESPName
+                    gui.NameLabel.Text = player.Name
+
+                    local itemHolder = gui:FindFirstChild("ItemHolder")
+                    if itemHolder then
+                        itemHolder.Visible = Settings.ESPItem
+                        if Settings.ESPItem then
+                            local foundValidItem = false
+                            local itemName = ""
+                            local itemIconId = ""
+                            local itemColor = Color3.fromRGB(255, 255, 255)
+                            
+                            local char = player.Character
+                            if char then
+                                for _, item in pairs(char:GetChildren()) do
+                                    if item:IsA("Tool") then
+                                        itemIconId, itemColor = GetItemDetails(item.Name)
+                                        itemName = item.Name
+                                        foundValidItem = true
+                                        break
+                                    end
+                                end
+                            end
+
+                            if not foundValidItem then
+                                local backpack = player:FindFirstChild("Backpack")
+                                if backpack then
+                                    for _, item in pairs(backpack:GetChildren()) do
+                                        if item:IsA("Tool") then
+                                            itemIconId, itemColor = GetItemDetails(item.Name)
+                                            itemName = item.Name
+                                            foundValidItem = true
+                                            break
+                                        end
+                                    end
+                                end
+                            end
+
+                            local icon = itemHolder:FindFirstChild("ItemIcon")
+                            local label = itemHolder:FindFirstChild("ItemLabel")
+
+                            if foundValidItem then
+                                if icon then icon.Image = itemIconId icon.Visible = true end
+                                if label then label.TextColor3 = itemColor label.Text = itemName end
+                            else
+                                if icon then icon.Visible = false end
+                                if label then 
+                                    label.TextColor3 = Color3.fromRGB(150, 150, 150)
+                                    label.Text = "❌ [No Weapon]" 
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    else
+        for player, gui in pairs(ESPObjects) do if gui then gui:Destroy() end end
+        ESPObjects = {}
+    end
+
+    if Settings.BoxESP then
+        for _, obj in pairs(workspace:GetDescendants()) do
+            if (obj:IsA("Model") or obj:IsA("BasePart")) and string.find(string.lower(obj.Name), "box") then
+                if not BoxESPObjects[obj] then
+                    local Highlight = Instance.new("Highlight")
+                    Highlight.Adornee = obj
+                    Highlight.FillColor = Color3.fromRGB(0, 191, 255)
+                    Highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    Highlight.FillTransparency = 0.5
+                    Highlight.Parent = obj
+                    BoxESPObjects[obj] = Highlight
+                end
+            end
+        end
+    else
+        for obj, highlight in pairs(BoxESPObjects) do if highlight then highlight:Destroy() end end
+        BoxESPObjects = {}
+    end
+end)
+
+-- UI Setup
+local MainTab = Window:Tab({ Title = "Combat & Silent Aim", Icon = "crosshair" })
+local MovementTab = Window:Tab({ Title = "Movement", Icon = "activity" })
+local ESPTab = Window:Tab({ Title = "Visuals (ESP)", Icon = "eye" })
+
+MainTab:Toggle({ Title = "Silent Aim (ล็อกเป้าหมาย 100%)", Default = false, Callback = function(V) Settings.SilentAim = V end })
+MainTab:Toggle({ Title = "Bullet Tracer (เปิด/ปิด เส้นกระสุน)", Default = true, Callback = function(V) Settings.BulletTracer = V end })
+
+-- เมนูเลือกสีเส้นกระสุน
+MainTab:Colorpicker({
+    Title = "Tracer Color (เลือกสีเส้นกระสุน)",
+    Default = Color3.fromRGB(255, 0, 0),
+    Callback = function(Value)
+        Settings.TracerColor = Value
+    end
+})
+
+-- เมนูปรับความหนาเส้นกระสุน
+MainTab:Slider({
+    Title = "Tracer Thickness (ความหนาเส้นกระสุน)",
+    Step = 0.05,
+    Value = { Min = 0.05, Max = 1.0, Default = 0.3 },
+    Callback = function(Value)
+        Settings.TracerThickness = Value
+    end
+})
+
+MainTab:Dropdown({ Title = "Aim Part", Values = { "Head", "HumanoidRootPart" }, Default = "Head", Callback = function(V) Settings.AimPart = V end })
+MainTab:Toggle({ Title = "Show FOV", Default = true, Callback = function(V) Settings.ShowFOV = V end })
+MainTab:Slider({ Title = "FOV Size", Step = 1, Value = { Min = 30, Max = 500, Default = 180 }, Callback = function(V) Settings.FOVSize = V end })
+MainTab:Toggle({ Title = "Anti-Aim", Default = false, Callback = function(V) Settings.AntiAimEnabled = V end })
+MainTab:Slider({ Title = "Anti-Aim Speed", Step = 5, Value = { Min = 10, Max = 100, Default = 50 }, Callback = function(V) Settings.AntiAimSpeed = V end })
+
+MovementTab:Toggle({ Title = "Underground Mode", Default = false, Callback = function(V) Settings.UndergroundMode = V end })
+MovementTab:Slider({ Title = "Underground Depth", Step = 1, Value = { Min = -100, Max = 100, Default = -10 }, Callback = function(V) Settings.UndergroundDepth = V end })
+MovementTab:Toggle({ Title = "Speed Hack", Default = false, Callback = function(V) Settings.CFrameSpeedEnabled = V end })
+MovementTab:Slider({ Title = "Speed Multiplier", Step = 0.05, Value = { Min = 0.1, Max = 1.5, Default = 0.5 }, Callback = function(V) Settings.SpeedMultiplier = V end })
+MovementTab:Toggle({ Title = "High Jump", Default = false, Callback = function(V) Settings.JumpPowerEnabled = V end })
+MovementTab:Slider({ Title = "Jump Power", Step = 5, Value = { Min = 50, Max = 300, Default = 75 }, Callback = function(V) Settings.JumpPowerValue = V end })
+
+ESPTab:Toggle({ Title = "ESP Name", Default = false, Callback = function(V) Settings.ESPName = V end })
+ESPTab:Toggle({ Title = "ESP Item", Default = false, Callback = function(V) Settings.ESPItem = V end })
+ESPTab:Toggle({ Title = "ESP Box", Default = false, Callback = function(V) Settings.BoxESP = V end })
+
+MainTab:Select()
